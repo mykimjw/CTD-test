@@ -15,17 +15,11 @@ app = FastAPI()
 
 MY_API_KEY = os.getenv("MY_API_KEY", "my-secret-key-1234")
 
-# 색상 상수 정의
-COLOR_RED = RGBColor(255, 0, 0)     # 삭제/수정 (구버전)
-COLOR_BLUE = RGBColor(0, 0, 255)   # 추가/수정 (신버전)
+COLOR_RED = RGBColor(255, 0, 0)
+COLOR_BLUE = RGBColor(0, 0, 255)
 COLOR_BLACK = RGBColor(0, 0, 0)
-HEX_HEADER_BG = "E6EEF8"           # 대비표 헤더 배경색
-HEX_DELETE_BG = "FFF2F2"
-HEX_INSERT_BG = "F2F6FF"
+HEX_HEADER_BG = "E6EEF8"
 
-# ----------------------------------------------------
-# 서식 및 XML 제어 헬퍼 함수
-# ----------------------------------------------------
 def set_cell_background(cell, hex_color):
     tcPr = cell._tc.get_or_add_tcPr()
     shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>')
@@ -627,7 +621,6 @@ def compare_and_modify_originals(doc1, doc2):
                 loc = get_regulatory_location(blocks2, j1 + new_subset.index(new_b)) if new_b else get_regulatory_location(blocks1, i1 + old_subset.index(old_b))
                 comparison_records.append({'loc': loc, 'old_block': old_b, 'new_block': new_b, 'type': 'replace'})
 
-    # 빨간색/파란색 마킹
     for tag, i1, i2, j1, j2 in reversed(opcodes):
         if tag in ('equal', 'insert'): continue
         elif tag == 'delete':
@@ -657,9 +650,6 @@ def compare_and_modify_originals(doc1, doc2):
 
     return comparison_records
 
-# ----------------------------------------------------
-# API 엔드포인트
-# ----------------------------------------------------
 @app.get("/ping")
 def ping():
     return {"status": "ok", "message": "Server awake!"}
@@ -668,9 +658,9 @@ def ping():
 async def compare_documents(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
-    template_file: Optional[UploadFile] = File(None),  # 선택적 양식 파일
-    product_name: Optional[str] = Form(""),            # 제품명 (양식 치환용)
-    doc_subtype: Optional[str] = Form(""),             # 서브타입 (CTD 구분 등)
+    template_file: Optional[UploadFile] = File(None),
+    product_name: Optional[str] = Form(""),
+    doc_subtype: Optional[str] = Form(""),
     authorization: str = Header(None)
 ):
     if authorization != f"Bearer {MY_API_KEY}":
@@ -684,13 +674,11 @@ async def compare_documents(
 
     comparison_records = compare_and_modify_originals(doc1, doc2)
 
-    # 양식 파일 적용 로직
     if template_file:
         template_bytes = await template_file.read()
         doc_table = docx.Document(io.BytesIO(template_bytes))
         table = doc_table.tables[0]
     else:
-        # 양식 파일이 없으면 기본 표 생성
         doc_table = docx.Document()
         title_p = doc_table.add_paragraph()
         title_run = title_p.add_run(f"변경대비표 - {product_name}" if product_name else "변경대비표")
@@ -713,7 +701,6 @@ async def compare_documents(
                 p.runs[0].font.bold = True
                 p.runs[0].font.size = Pt(10)
 
-    # 제품명 %제품명% 치환
     if product_name:
         clean_product_name = re.sub(r"\s+", " ", product_name).strip()
         replace_placeholder_in_element(doc_table, "%제품명%", clean_product_name)
@@ -721,7 +708,6 @@ async def compare_documents(
             if section.header is not None:
                 replace_placeholder_in_element(section.header, "%제품명%", clean_product_name)
 
-    # 대비표 기록
     if comparison_records:
         write_records_to_table(comparison_records, table, doc_subtype)
         col_widths = [Inches(1.5), Inches(3.0), Inches(3.0), Inches(1.0)]
