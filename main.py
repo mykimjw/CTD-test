@@ -7,7 +7,7 @@ import docx
 from docx.shared import RGBColor, Pt, Inches
 from docx.oxml import parse_xml, OxmlElement
 from docx.oxml.ns import nsdecls, qn
-from typing import Optional
+from typing import Optional, List
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -15,6 +15,7 @@ app = FastAPI()
 
 MY_API_KEY = os.getenv("MY_API_KEY", "my-secret-key-jw1234!@")
 
+# 색상 및 스타일 상수
 COLOR_RED = RGBColor(255, 0, 0)    # 삭제/수정 (구버전)
 COLOR_BLUE = RGBColor(0, 0, 255)   # 추가/수정 (신버전)
 COLOR_BLACK = RGBColor(0, 0, 0)
@@ -545,7 +546,6 @@ def write_records_to_table(comparison_records, table, doc_subtype="", has_templa
             })
 
     is_first_record = len(table.rows) == 2 and table.rows[1].cells[0].text == ""
-
     row_cells = table.rows[1].cells if is_first_record else table.add_row().cells
 
     row_cells[0].text = doc_subtype
@@ -730,6 +730,41 @@ def compare_and_modify_originals(doc1, doc2):
 
     return comparison_records
 
+def get_product_name(base_name):
+    cleaned = re.sub(r"^\d+\s*\(원데이터\)", "", base_name).strip()
+    cleaned = re.sub(r"^\(원데이터\)", "", cleaned).strip()
+    if "CTD" in cleaned:
+        return cleaned.split("CTD")[0].strip()
+    return cleaned.strip()
+
+def get_doc_subtype(base_name):
+    cleaned = re.sub(r"^\d+\s*\(원데이터\)", "", base_name).strip()
+    cleaned = re.sub(r"^\(원데이터\)", "", cleaned).strip()
+    if "CTD" in cleaned:
+        idx = cleaned.find("CTD")
+        return cleaned[idx:].strip()
+    return cleaned.strip()
+
+def get_file_info(filename):
+    pattern = re.compile(r"^(.*?)_((?:ver\s*)?\d+\.\d+)\.docx$", re.IGNORECASE)
+    match = pattern.match(filename)
+    if match:
+        base_name = match.group(1).strip()
+    else:
+        base_name = re.sub(r'\.docx$', '', filename, flags=re.IGNORECASE).strip()
+    return get_product_name(base_name), get_doc_subtype(base_name)
+
+def get_sort_key(doc_subtype):
+    match = re.search(r'(\d+)\.(\d+)\.([a-zA-Z]+)\.(\d+)(?:\.(\d+))?', doc_subtype)
+    if match:
+        level1 = int(match.group(1))
+        level2 = int(match.group(2))
+        level3 = match.group(3).upper()
+        level4 = int(match.group(4))
+        level5 = int(match.group(5)) if match.group(5) else 0
+        return (0, level1, level2, level3, level4, level5, doc_subtype)
+    return (1, 0, 0, "", 0, 0, doc_subtype)
+
 # ----------------------------------------------------
 # API 엔드포인트
 # ----------------------------------------------------
@@ -739,28 +774,35 @@ def ping():
 
 @app.post("/compare")
 async def compare_documents(
-    old_file: Optional[UploadFile] = File(None),  # 💡 구버전이 없는 경우 None 수용
-    new_file: UploadFile = File(...),
+    new_files: List[UploadFile] = File(...),
+    old_files: List[UploadFile] = File([]),
     template_file: Optional[UploadFile] = File(None),
     product_name: Optional[str] = Form(""),
-    doc_subtype: Optional[str] = Form(""),
     authorization: str = Header(None)
 ):
     if authorization != f"Bearer {MY_API_KEY}":
         raise HTTPException(status_code=401, detail="인증 실패")
 
-    # 구버전이 있으면 읽고, 없으면 빈 문서 생성 (완전 신규 문서 처리)
-    if old_file and old_file.filename:
-        old_bytes = await old_file.read()
-        doc1 = docx.Document(io.BytesIO(old_bytes))
-    else:
-        doc1 = docx.Document()
+    # 구버전 파일 매핑 사전 구축
+    old_file_map = {}
+    for f in old_files:
+        if f.filename:
+            old_bytes = await f.read()
+            p, s = get_file_info(f.filename)
+            old_file_map[(p, s)] = old_bytes
 
-    new_bytes = await new_file.read()
-    doc2 = docx.Document(io.BytesIO(new_bytes))
+    # 신버전 파일 파싱 및 정렬
+    subtypes_data = []
+    for f in new_files:
+        if f.filename:
+            new_bytes = await f.read()
+            p, s = get_file_info(f.filename)
+            subtypes_data.append((p, s, new_bytes))
 
-    comparison_records = compare_and_modify_originals(doc1, doc2)
+    # CTD 순서 정렬 (2.3.P.2 -> 2.3.S.2 -> 3.2.P.2 ...)
+    subtypes_data.sort(key=lambda x: get_sort_key(x[1]))
 
+    # 양식 파일 로드
     if template_file:
         template_bytes = await template_file.read()
         doc_table = docx.Document(io.BytesIO(template_bytes))
@@ -788,15 +830,29 @@ async def compare_documents(
                 p.runs[0].font.bold = True
                 p.runs[0].font.size = Pt(10)
 
-    if product_name:
-        clean_product_name = re.sub(r"\s+", " ", product_name).strip()
+    # %제품명% 치환
+    target_product_name = product_name or (subtypes_data[0][0] if subtypes_data else "")
+    if target_product_name:
+        clean_product_name = re.sub(r"\s+", " ", target_product_name).strip()
         replace_placeholder_in_element(doc_table, "%제품명%", clean_product_name)
         for section in doc_table.sections:
             if section.header is not None:
                 replace_placeholder_in_element(section.header, "%제품명%", clean_product_name)
 
-    if comparison_records:
-        write_records_to_table(comparison_records, table, doc_subtype, has_template=bool(template_file))
+    # 모든 CTD 서브 섹션을 단 1개의 양식 표에 연속 기록
+    has_any_records = False
+    for p, doc_subtype, new_bytes in subtypes_data:
+        old_bytes = old_file_map.get((p, doc_subtype))
+        
+        doc1 = docx.Document(io.BytesIO(old_bytes)) if old_bytes else docx.Document()
+        doc2 = docx.Document(io.BytesIO(new_bytes))
+
+        records = compare_and_modify_originals(doc1, doc2)
+        if records:
+            write_records_to_table(records, table, doc_subtype, has_template=bool(template_file))
+            has_any_records = True
+
+    if has_any_records:
         col_widths = [Inches(1.5), Inches(3.0), Inches(3.0), Inches(1.0)]
         for row in table.rows:
             for idx, width in enumerate(col_widths):
@@ -809,5 +865,5 @@ async def compare_documents(
     return StreamingResponse(
         output_stream,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": "attachment; filename=comparison_result.docx"}
+        headers={"Content-Disposition": "attachment; filename=consolidated_ctd_comparison.docx"}
     )
