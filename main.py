@@ -13,13 +13,20 @@ from fastapi.responses import StreamingResponse
 
 app = FastAPI()
 
-MY_API_KEY = os.getenv("MY_API_KEY", "my-secret-key-1234")
+# Render 환경변수에서 가져오며, 미설정 시 지정하신 키 기본 적용
+MY_API_KEY = os.getenv("MY_API_KEY", "my-secret-key-jw1234!@")
 
-COLOR_RED = RGBColor(255, 0, 0)
-COLOR_BLUE = RGBColor(0, 0, 255)
+# 색상 상수 정의
+COLOR_RED = RGBColor(255, 0, 0)    # 삭제/수정 (구버전)
+COLOR_BLUE = RGBColor(0, 0, 255)   # 추가/수정 (신버전)
 COLOR_BLACK = RGBColor(0, 0, 0)
-HEX_HEADER_BG = "E6EEF8"
+HEX_HEADER_BG = "E6EEF8"           # 대비표 헤더 배경색
+HEX_DELETE_BG = "FFF2F2"           # 삭제 셀 배경색
+HEX_INSERT_BG = "F2F6FF"           # 추가 셀 배경색
 
+# ----------------------------------------------------
+# XML 및 서식 제어 헬퍼 함수
+# ----------------------------------------------------
 def set_cell_background(cell, hex_color):
     tcPr = cell._tc.get_or_add_tcPr()
     shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>')
@@ -52,6 +59,7 @@ def set_table_borders(table):
 def get_char_diff(old_text, new_text):
     matcher = difflib.SequenceMatcher(None, old_text, new_text)
     opcodes = matcher.get_opcodes()
+
     diff_runs = []
     for tag, i1, i2, j1, j2 in opcodes:
         if tag == 'equal':
@@ -72,18 +80,28 @@ def get_char_diff(old_text, new_text):
             merged_runs[-1] = (tag, merged_runs[-1][1] + text)
         else:
             merged_runs.append((tag, text))
+
     return merged_runs
 
 def is_heading(paragraph):
     text = paragraph.text.strip()
     if not text:
         return False
+
     heading_patterns = [
-        r'^제\s*\d+\s*[조장항장회]\b', r'^(?:\d+\.)+\d*\s*', r'^[가-힣]\.\s*',
-        r'^(?:\d+|[가-힣]|[a-zA-Z])\)\s*', r'^\(\s*(?:\d+|[가-힣]|[a-zA-Z])\s*\)\s*',
-        r'^[①-⑳]', r'^\[[^\]]+\]', r'^(?:■|●|▲|◆|○|▶|◈|※|•|\*)\s*'
+        r'^제\s*\d+\s*[조장항장회]\b',
+        r'^(?:\d+\.)+\d*\s*',
+        r'^[가-힣]\.\s*',
+        r'^(?:\d+|[가-힣]|[a-zA-Z])\)\s*',
+        r'^\(\s*(?:\d+|[가-힣]|[a-zA-Z])\s*\)\s*',
+        r'^[①-⑳]',
+        r'^\[[^\]]+\]',
+        r'^(?:■|●|▲|◆|○|▶|◈|※|•|\*)\s*'
     ]
-    return any(re.match(pattern, text) for pattern in heading_patterns)
+    for pattern in heading_patterns:
+        if re.match(pattern, text):
+            return True
+    return False
 
 def get_table_summary(table):
     rows_text = []
@@ -164,49 +182,67 @@ def compare_and_mark_tables(t1, t2):
             continue
         elif r_tag == 'delete':
             for idx in range(ri1, ri2):
-                for cell in t1.rows[idx].cells:
+                row = t1.rows[idx]
+                for cell in row.cells:
                     for p in cell.paragraphs:
                         for run in p.runs:
                             run.font.color.rgb = COLOR_RED
         elif r_tag == 'insert':
             for idx in range(rj1, rj2):
-                for cell in t2.rows[idx].cells:
+                row = t2.rows[idx]
+                for cell in row.cells:
                     for p in cell.paragraphs:
                         for run in p.runs:
                             run.font.color.rgb = COLOR_BLUE
         elif r_tag == 'replace':
-            old_rows, new_rows = t1.rows[ri1:ri2], t2.rows[rj1:rj2]
+            old_rows = t1.rows[ri1:ri2]
+            new_rows = t2.rows[rj1:rj2]
+
             min_rows = min(len(old_rows), len(new_rows))
             for k in range(min_rows):
-                r1, r2 = old_rows[k], new_rows[k]
+                r1 = old_rows[k]
+                r2 = new_rows[k]
                 min_cells = min(len(r1.cells), len(r2.cells))
                 for c_idx in range(min_cells):
-                    cell1, cell2 = r1.cells[c_idx], r2.cells[c_idx]
-                    p1_list, p2_list = cell1.paragraphs, cell2.paragraphs
+                    cell1 = r1.cells[c_idx]
+                    cell2 = r2.cells[c_idx]
+
+                    p1_list = cell1.paragraphs
+                    p2_list = cell2.paragraphs
+
                     min_p = min(len(p1_list), len(p2_list))
                     for p_idx in range(min_p):
-                        p1, p2 = p1_list[p_idx], p2_list[p_idx]
+                        p1 = p1_list[p_idx]
+                        p2 = p2_list[p_idx]
                         diff_runs = get_char_diff(p1.text.strip(), p2.text.strip())
                         apply_old_inline_diff(p1, diff_runs)
                         apply_new_inline_diff(p2, diff_runs)
 
                     if len(p1_list) > min_p:
                         for p_idx in range(min_p, len(p1_list)):
-                            for r in p1_list[p_idx].runs: r.font.color.rgb = COLOR_RED
+                            p = p1_list[p_idx]
+                            for r in p.runs:
+                                r.font.color.rgb = COLOR_RED
+
                     if len(p2_list) > min_p:
                         for p_idx in range(min_p, len(p2_list)):
-                            for r in p2_list[p_idx].runs: r.font.color.rgb = COLOR_BLUE
+                            p = p2_list[p_idx]
+                            for r in p.runs:
+                                r.font.color.rgb = COLOR_BLUE
 
             if len(old_rows) > min_rows:
                 for idx in range(min_rows, len(old_rows)):
                     for cell in old_rows[idx].cells:
                         for p in cell.paragraphs:
-                            for run in p.runs: run.font.color.rgb = COLOR_RED
+                            for run in p.runs:
+                                run.font.color.rgb = COLOR_RED
+
             if len(new_rows) > min_rows:
                 for idx in range(min_rows, len(new_rows)):
                     for cell in new_rows[idx].cells:
                         for p in cell.paragraphs:
-                            for run in p.runs: run.font.color.rgb = COLOR_BLUE
+                            for run in p.runs:
+                                run.font.color.rgb = COLOR_BLUE
 
 def fit_table_to_width(tbl_xml, target_width_dxa):
     tblGrid = tbl_xml.find(qn('w:tblGrid'))
@@ -214,7 +250,10 @@ def fit_table_to_width(tbl_xml, target_width_dxa):
     if tblGrid is not None:
         for gridCol in tblGrid.findall(qn('w:gridCol')):
             w_val = gridCol.get(qn('w:w'))
-            col_widths.append(float(w_val) if w_val else 1000.0)
+            if w_val:
+                col_widths.append(float(w_val))
+            else:
+                col_widths.append(1000.0)
 
     if not col_widths:
         first_row = tbl_xml.find(qn('w:tr'))
@@ -259,7 +298,8 @@ def fit_table_to_width(tbl_xml, target_width_dxa):
             gridSpan = tcPr.find(qn('w:gridSpan'))
             if gridSpan is not None:
                 span_val = gridSpan.get(qn('w:val'))
-                if span_val: span = int(span_val)
+                if span_val:
+                    span = int(span_val)
 
             if col_idx < len(scaled_widths):
                 cell_width = sum(scaled_widths[col_idx : col_idx + span])
@@ -267,6 +307,7 @@ def fit_table_to_width(tbl_xml, target_width_dxa):
                 cell_width = int((target_width_dxa / len(scaled_widths)) * span)
 
             col_idx += span
+
             tcW = tcPr.find(qn('w:tcW'))
             if tcW is None:
                 tcW = OxmlElement('w:tcW')
@@ -298,10 +339,12 @@ def replace_placeholder_in_element(container, placeholder, value):
 def replace_placeholder_in_paragraph(p, placeholder, value):
     if placeholder not in p.text:
         return
+
     for run in p.runs:
         if placeholder in run.text:
             run.text = run.text.replace(placeholder, value)
             return
+
     full_text = p.text.replace(placeholder, value)
     if p.runs:
         p.runs[0].text = full_text
@@ -314,6 +357,7 @@ def prune_paragraph_xml(p_xml):
     runs = p_xml.findall(qn('w:r'))
     if len(runs) <= 3:
         return
+
     modified_indices = set()
     for idx, r in enumerate(runs):
         rPr = r.find(qn('w:rPr'))
@@ -330,8 +374,10 @@ def prune_paragraph_xml(p_xml):
     keep_indices = set()
     for idx in modified_indices:
         keep_indices.add(idx)
-        if idx > 0: keep_indices.add(idx - 1)
-        if idx < len(runs) - 1: keep_indices.add(idx + 1)
+        if idx > 0:
+            keep_indices.add(idx - 1)
+        if idx < len(runs) - 1:
+            keep_indices.add(idx + 1)
 
     has_leading_ellipsis = 0 not in keep_indices
     has_trailing_ellipsis = (len(runs) - 1) not in keep_indices
@@ -341,42 +387,61 @@ def prune_paragraph_xml(p_xml):
             p_xml.remove(r)
 
     if has_leading_ellipsis:
-        first_kept_run = runs[min(keep_indices)]
+        first_kept_idx = min(keep_indices)
+        first_kept_run = runs[first_kept_idx]
+
         ellipsis_r = OxmlElement('w:r')
         ellipsis_t = OxmlElement('w:t')
         ellipsis_t.text = "... "
         ellipsis_r.append(ellipsis_t)
+
         rPr = OxmlElement('w:rPr')
         color = OxmlElement('w:color')
         color.set(qn('w:val'), '808080')
         rPr.append(color)
-        rPr.append(OxmlElement('w:i'))
+        italic = OxmlElement('w:i')
+        rPr.append(italic)
         ellipsis_r.append(rPr)
+
         first_kept_run.addprevious(ellipsis_r)
 
     if has_trailing_ellipsis:
-        last_kept_run = runs[max(keep_indices)]
+        last_kept_idx = max(keep_indices)
+        last_kept_run = runs[last_kept_idx]
+
         ellipsis_r = OxmlElement('w:r')
         ellipsis_t = OxmlElement('w:t')
         ellipsis_t.text = " ..."
         ellipsis_r.append(ellipsis_t)
+
         rPr = OxmlElement('w:rPr')
         color = OxmlElement('w:color')
         color.set(qn('w:val'), '808080')
         rPr.append(color)
-        rPr.append(OxmlElement('w:i'))
+        italic = OxmlElement('w:i')
+        rPr.append(italic)
         ellipsis_r.append(rPr)
+
         last_kept_run.addnext(ellipsis_r)
 
 def prune_table_xml(tbl_xml):
     rows = tbl_xml.findall(qn('w:tr'))
     if len(rows) <= 3:
         return
-    modified_indices = {idx for idx, tr in enumerate(rows) if idx > 0 and is_row_modified(tr)}
+
+    modified_indices = set()
+    for idx, tr in enumerate(rows):
+        if idx == 0:
+            continue
+        if is_row_modified(tr):
+            modified_indices.add(idx)
+
     if not modified_indices:
         return
 
-    new_rows = [rows[0]]
+    new_rows = []
+    new_rows.append(rows[0])
+
     def create_ellipsis_row(template_tr):
         ell_tr = copy.deepcopy(template_tr)
         for cell in ell_tr.iter(qn('w:tc')):
@@ -391,7 +456,8 @@ def prune_table_xml(tbl_xml):
             color = OxmlElement('w:color')
             color.set(qn('w:val'), '808080')
             rPr.append(color)
-            rPr.append(OxmlElement('w:i'))
+            italic = OxmlElement('w:i')
+            rPr.append(italic)
             r.append(rPr)
             t = OxmlElement('w:t')
             t.text = "..."
@@ -409,87 +475,141 @@ def prune_table_xml(tbl_xml):
     if len(rows) - 1 - last_kept_idx > 0:
         new_rows.append(create_ellipsis_row(rows[-1]))
 
-    for tr in rows: tbl_xml.remove(tr)
-    for tr in new_rows: tbl_xml.append(tr)
+    for tr in rows:
+        tbl_xml.remove(tr)
 
-def copy_group_blocks_to_cell(group, dest_cell, is_old):
+    for tr in new_rows:
+        tbl_xml.append(tr)
+
+def copy_all_groups_to_cell(grouped_records, dest_cell, is_old):
+    """한 셀 안에 상위 소제목 중복을 제거하면서 계층 구조대로 기입합니다."""
     tc = dest_cell._tc
     for child in list(tc):
         if child.tag.endswith('Pr'):
             continue
         tc.remove(child)
 
-    parts = [p.strip() for p in group['loc'].split(" > ")]
-    for idx, part in enumerate(parts):
-        p_hdr = OxmlElement('w:p')
-        r_hdr = OxmlElement('w:r')
-        rPr = OxmlElement('w:rPr')
-        rPr.append(OxmlElement('w:b'))
+    last_printed_parts = []
 
-        sz_xml = OxmlElement('w:sz')
-        sz_xml.set(qn('w:val'), '18')
-        rPr.append(sz_xml)
+    for g_idx, group in enumerate(grouped_records):
+        parts = [p.strip() for p in group['loc'].split(" > ")]
 
-        rFonts = OxmlElement('w:rFonts')
-        rFonts.set(qn('w:eastAsia'), '맑은 고딕')
-        rFonts.set(qn('w:ascii'), '맑은 고딕')
-        rFonts.set(qn('w:hAnsi'), '맑은 고딕')
-        rPr.append(rFonts)
+        if len(parts) > 1:
+            sub_parts = parts[1:]
+        else:
+            first_p = parts[0]
+            first_word = first_p.split()[0].rstrip('.') if first_p.split() else ''
+            p_parts = re.split(r'[\.\-]', first_word)
+            if (len(p_parts) == 4 and all(re.match(r'^[a-zA-Z0-9\-]+$', p) for p in p_parts)) or first_p == "문서 시작":
+                sub_parts = []
+            else:
+                sub_parts = parts
 
-        r_hdr.append(rPr)
-        t_hdr = OxmlElement('w:t')
-        t_hdr.text = f"■ {part}" if idx == 0 else f"{'  ' * idx}└ {part}"
-        r_hdr.append(t_hdr)
-        p_hdr.append(r_hdr)
-        tc.append(p_hdr)
+        common_len = 0
+        min_p_len = min(len(last_printed_parts), len(sub_parts))
+        for k in range(min_p_len):
+            if last_printed_parts[k] == sub_parts[k]:
+                common_len += 1
+            else:
+                break
 
-    has_any_block = False
-    for item in group['items']:
-        src_block = item['old_block'] if is_old else item['new_block']
-        if src_block is not None:
-            has_any_block = True
-            if isinstance(src_block, docx.text.paragraph.Paragraph):
-                new_block_xml = copy.deepcopy(src_block._p)
-                prune_paragraph_xml(new_block_xml)
-                tc.append(new_block_xml)
-            elif isinstance(src_block, docx.table.Table):
-                new_block_xml = copy.deepcopy(src_block._tbl)
-                prune_table_xml(new_block_xml)
-                target_width_dxa = int(dest_cell.width.inches * 1440) - 300 if dest_cell.width else 4020
-                if target_width_dxa <= 0: target_width_dxa = 4020
-                fit_table_to_width(new_block_xml, target_width_dxa)
-                tc.append(new_block_xml)
+        for idx in range(common_len, len(sub_parts)):
+            part = sub_parts[idx]
+            p_hdr = OxmlElement('w:p')
+            r_hdr = OxmlElement('w:r')
+            rPr = OxmlElement('w:rPr')
 
-    if not has_any_block:
-        p_none = OxmlElement('w:p')
-        r_none = OxmlElement('w:r')
-        rPr_none = OxmlElement('w:rPr')
-        rFonts = OxmlElement('w:rFonts')
-        rFonts.set(qn('w:eastAsia'), '맑은 고딕')
-        rPr_none.append(rFonts)
+            b_xml = OxmlElement('w:b')
+            rPr.append(b_xml)
 
-        sz = OxmlElement('w:sz')
-        sz.set(qn('w:val'), '18')
-        rPr_none.append(sz)
+            sz_xml = OxmlElement('w:sz')
+            sz_xml.set(qn('w:val'), '18')
+            rPr.append(sz_xml)
 
-        color = OxmlElement('w:color')
-        color.set(qn('w:val'), '808080')
-        rPr_none.append(color)
+            rFonts = OxmlElement('w:rFonts')
+            rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+            rFonts.set(qn('w:ascii'), '맑은 고딕')
+            rFonts.set(qn('w:hAnsi'), '맑은 고딕')
+            rPr.append(rFonts)
 
-        r_none.append(rPr_none)
-        t_none = OxmlElement('w:t')
-        t_none.text = "(없음)"
-        r_none.append(t_none)
-        p_none.append(r_none)
-        tc.append(p_none)
+            r_hdr.append(rPr)
+            t_hdr = OxmlElement('w:t')
 
-    tc.append(OxmlElement('w:p'))
+            if idx == 0:
+                t_hdr.text = f"■ {part}"
+            else:
+                indent = "  " * idx
+                t_hdr.text = f"{indent}└ {part}"
+
+            r_hdr.append(t_hdr)
+            p_hdr.append(r_hdr)
+            tc.append(p_hdr)
+
+        if sub_parts:
+            last_printed_parts = sub_parts
+
+        has_any_block = False
+        for item in group['items']:
+            src_block = item['old_block'] if is_old else item['new_block']
+            if src_block is not None:
+                has_any_block = True
+                if isinstance(src_block, docx.text.paragraph.Paragraph):
+                    block_xml = src_block._p
+                    new_block_xml = copy.deepcopy(block_xml)
+                    prune_paragraph_xml(new_block_xml)
+                    tc.append(new_block_xml)
+                elif isinstance(src_block, docx.table.Table):
+                    block_xml = src_block._tbl
+                    new_block_xml = copy.deepcopy(block_xml)
+                    prune_table_xml(new_block_xml)
+
+                    parent_width_dxa = 4320
+                    if dest_cell.width:
+                        parent_width_dxa = int(dest_cell.width.inches * 1440)
+                    target_width_dxa = parent_width_dxa - 300
+                    if target_width_dxa <= 0:
+                        target_width_dxa = 4020
+                    fit_table_to_width(new_block_xml, target_width_dxa)
+                    tc.append(new_block_xml)
+
+        if not has_any_block:
+            p_none = OxmlElement('w:p')
+            r_none = OxmlElement('w:r')
+            rPr_none = OxmlElement('w:rPr')
+
+            rFonts_none = OxmlElement('w:rFonts')
+            rFonts_none.set(qn('w:eastAsia'), '맑은 고딕')
+            rFonts_none.set(qn('w:ascii'), '맑은 고딕')
+            rFonts_none.set(qn('w:hAnsi'), '맑은 고딕')
+            rPr_none.append(rFonts_none)
+
+            sz_none = OxmlElement('w:sz')
+            sz_none.set(qn('w:val'), '18')
+            rPr_none.append(sz_none)
+
+            color = OxmlElement('w:color')
+            color.set(qn('w:val'), '808080')
+            rPr_none.append(color)
+
+            r_none.append(rPr_none)
+            t_none = OxmlElement('w:t')
+            t_none.text = "(없음)"
+            r_none.append(t_none)
+            p_none.append(r_none)
+            tc.append(p_none)
+
+        if g_idx < len(grouped_records) - 1:
+            tc.append(OxmlElement('w:p'))
+
+    p_last = OxmlElement('w:p')
+    tc.append(p_last)
 
 def format_cell_runs_font(cell, font_name='맑은 고딕', font_size_pt=9):
     for p in cell.paragraphs:
         for run in p.runs:
             run.font.name = font_name
             run.font.size = Pt(font_size_pt)
+
     for table in cell.tables:
         for row in table.rows:
             for c in row.cells:
@@ -498,75 +618,100 @@ def format_cell_runs_font(cell, font_name='맑은 고딕', font_size_pt=9):
                         run.font.name = font_name
                         run.font.size = Pt(font_size_pt)
 
-def write_records_to_table(comparison_records, table, doc_subtype=""):
+def write_records_to_table(comparison_records, table, doc_subtype="", has_template=True):
     grouped_records = []
     for record in comparison_records:
         if grouped_records and grouped_records[-1]['loc'] == record['loc']:
             grouped_records[-1]['items'].append(record)
         else:
-            grouped_records.append({'loc': record['loc'], 'items': [record]})
+            grouped_records.append({
+                'loc': record['loc'],
+                'items': [record]
+            })
 
     is_first_record = len(table.rows) == 2 and table.rows[1].cells[0].text == ""
 
-    for r_idx, group in enumerate(grouped_records):
-        row_cells = table.rows[1].cells if (is_first_record and r_idx == 0) else table.add_row().cells
+    if is_first_record:
+        row_cells = table.rows[1].cells
+    else:
+        row_cells = table.add_row().cells
 
-        row_cells[0].text = doc_subtype
-        set_cell_margins(row_cells[0])
-        if row_cells[0].paragraphs[0].runs:
-            run = row_cells[0].paragraphs[0].runs[0]
-            run.font.size = Pt(9)
-            run.font.name = '맑은 고딕'
-            run.font.bold = True
+    row_cells[0].text = doc_subtype
+    set_cell_margins(row_cells[0])
+    if row_cells[0].paragraphs[0].runs:
+        run = row_cells[0].paragraphs[0].runs[0]
+        run.font.size = Pt(9)
+        run.font.name = '맑은 고딕'
+        run.font.bold = True
 
-        copy_group_blocks_to_cell(group, row_cells[1], is_old=True)
-        format_cell_runs_font(row_cells[1])
-        set_cell_margins(row_cells[1])
+    copy_all_groups_to_cell(grouped_records, row_cells[1], is_old=True)
+    format_cell_runs_font(row_cells[1])
+    set_cell_margins(row_cells[1])
 
-        copy_group_blocks_to_cell(group, row_cells[2], is_old=False)
-        format_cell_runs_font(row_cells[2])
-        set_cell_margins(row_cells[2])
+    copy_all_groups_to_cell(grouped_records, row_cells[2], is_old=False)
+    format_cell_runs_font(row_cells[2])
+    set_cell_margins(row_cells[2])
 
-        row_cells[3].text = ""
-        set_cell_margins(row_cells[3])
+    row_cells[3].text = ""
+    set_cell_margins(row_cells[3])
 
 def find_preceding_table_title(blocks, current_idx):
     for idx in range(current_idx - 1, -1, -1):
         b = blocks[idx]
         if isinstance(b, docx.text.paragraph.Paragraph):
             text = b.text.strip()
-            if not text: continue
-            if any(re.match(p, text) for p in [r"^\s*(?:표|Table|<표|<Table)\s*\d+"]):
+            if not text:
+                continue
+            is_tbl_name = any(re.match(p, text) for p in [
+                r"^\s*(?:표|Table|<표|<Table)\s*\d+"
+            ])
+            if is_tbl_name:
                 return text
-            if is_heading(b) and (re.match(r'^\d+\.\s', text) or re.match(r'^(?:■|◆|▶|◈)\s*', text)):
-                break
+            if is_heading(b):
+                if re.match(r'^\d+\.\s', text) or re.match(r'^(?:■|◆|▶|◈)\s*', text):
+                    break
     return None
 
 def get_regulatory_location(blocks, current_idx):
-    found_4_level, found_5_level, table_title = None, None, None
+    """현재 블록 위치 기준으로 상위 모든 깊이의 소제목을 추출합니다."""
+    found_levels = {}
+    table_title = None
+
     b_curr = blocks[current_idx]
     if isinstance(b_curr, docx.table.Table):
         table_title = find_preceding_table_title(blocks, current_idx)
 
     for idx in range(current_idx - 1, -1, -1):
         b = blocks[idx]
-        if not isinstance(b, docx.text.paragraph.Paragraph): continue
+        if not isinstance(b, docx.text.paragraph.Paragraph):
+            continue
+
         text = b.text.strip()
-        if not text: continue
+        if not text:
+            continue
+
         words = text.split()
-        if not words: continue
-        parts = words[0].rstrip('.').split('.')
+        if not words:
+            continue
+        first_word = words[0].rstrip('.')
+        parts = re.split(r'[\.\-]', first_word)
 
-        is_valid_reg = len(parts) >= 2 and all(re.match(r'^[a-zA-Z0-9\-]+$', p) for p in parts)
-        if is_valid_reg:
-            if len(parts) == 5 and not found_5_level: found_5_level = text
-            elif len(parts) == 4 and not found_4_level: found_4_level = text
-        if found_4_level and found_5_level: break
+        if len(parts) >= 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isalpha() and parts[3].isdigit():
+            depth = len(parts)
+            if depth not in found_levels:
+                if not found_levels or depth < min(found_levels.keys()):
+                    found_levels[depth] = text
+            if 4 in found_levels:
+                break
+        elif all(p.isdigit() for p in parts) and len(parts) >= 1:
+            depth = len(parts) + 3
+            if depth not in found_levels:
+                if not found_levels or depth < min(found_levels.keys()):
+                    found_levels[depth] = text
 
-    path_nodes = []
-    if found_4_level: path_nodes.append(found_4_level)
-    if found_5_level: path_nodes.append(found_5_level)
-    if table_title: path_nodes.append(table_title)
+    path_nodes = [found_levels[d] for d in sorted(found_levels.keys())]
+    if table_title:
+        path_nodes.append(table_title)
 
     if not path_nodes:
         for idx in range(current_idx - 1, -1, -1):
@@ -577,7 +722,10 @@ def get_regulatory_location(blocks, current_idx):
                     path_nodes.append(t)
                     break
 
-    return " > ".join(path_nodes) if path_nodes else "문서 시작"
+    if not path_nodes:
+        return "문서 시작"
+
+    return " > ".join(path_nodes)
 
 def remove_blue_color_from_document(doc):
     for p in doc.paragraphs:
@@ -592,6 +740,13 @@ def remove_blue_color_from_document(doc):
                     for run in p.runs:
                         if run.font.color and run.font.color.rgb == RGBColor(0, 0, 255):
                             run.font.color.rgb = RGBColor(0, 0, 0)
+                for nested_table in cell.tables:
+                    for n_row in nested_table.rows:
+                        for n_cell in n_row.cells:
+                            for n_p in n_cell.paragraphs:
+                                for n_run in n_p.runs:
+                                    if n_run.font.color and n_run.font.color.rgb == RGBColor(0, 0, 255):
+                                        n_run.font.color.rgb = RGBColor(0, 0, 0)
 
 def compare_and_modify_originals(doc1, doc2):
     remove_blue_color_from_document(doc1)
@@ -604,52 +759,102 @@ def compare_and_modify_originals(doc1, doc2):
 
     matcher = difflib.SequenceMatcher(None, blocks1_repr, blocks2_repr)
     opcodes = matcher.get_opcodes()
+
     comparison_records = []
 
     for tag, i1, i2, j1, j2 in opcodes:
-        if tag == 'equal': continue
+        if tag == 'equal':
+            continue
+
         elif tag == 'insert':
             for j in range(j1, j2):
-                comparison_records.append({'loc': get_regulatory_location(blocks2, j), 'old_block': None, 'new_block': blocks2[j], 'type': 'insert'})
+                b = blocks2[j]
+                loc = get_regulatory_location(blocks2, j)
+                comparison_records.append({
+                    'loc': loc,
+                    'old_block': None,
+                    'new_block': b,
+                    'type': 'insert'
+                })
+
         elif tag == 'delete':
             for i in range(i1, i2):
-                comparison_records.append({'loc': get_regulatory_location(blocks1, i), 'old_block': blocks1[i], 'new_block': None, 'type': 'delete'})
+                b = blocks1[i]
+                loc = get_regulatory_location(blocks1, i)
+                comparison_records.append({
+                    'loc': loc,
+                    'old_block': b,
+                    'new_block': None,
+                    'type': 'delete'
+                })
+
         elif tag == 'replace':
-            old_subset, new_subset = blocks1[i1:i2], blocks2[j1:j2]
+            old_subset = blocks1[i1:i2]
+            new_subset = blocks2[j1:j2]
+
             paired = match_replaced_ranges(old_subset, new_subset)
             for old_b, new_b in paired:
-                loc = get_regulatory_location(blocks2, j1 + new_subset.index(new_b)) if new_b else get_regulatory_location(blocks1, i1 + old_subset.index(old_b))
-                comparison_records.append({'loc': loc, 'old_block': old_b, 'new_block': new_b, 'type': 'replace'})
+                if new_b:
+                    loc = get_regulatory_location(blocks2, j1 + new_subset.index(new_b))
+                else:
+                    loc = get_regulatory_location(blocks1, i1 + old_subset.index(old_b))
+
+                comparison_records.append({
+                    'loc': loc,
+                    'old_block': old_b,
+                    'new_block': new_b,
+                    'type': 'replace'
+                })
 
     for tag, i1, i2, j1, j2 in reversed(opcodes):
-        if tag in ('equal', 'insert'): continue
+        if tag == 'equal' or tag == 'insert':
+            continue
         elif tag == 'delete':
-            for i in range(i1, i2): color_entire_block(blocks1[i], COLOR_RED)
+            for i in range(i1, i2):
+                color_entire_block(blocks1[i], COLOR_RED)
         elif tag == 'replace':
-            if (i2 - i1 == 1) and (j2 - j1 == 1) and (blocks1_repr[i1][0] == blocks2_repr[j1][0]):
-                b1, b2 = blocks1[i1], blocks2[j1]
-                if isinstance(b1, docx.text.paragraph.Paragraph):
-                    diff_runs = get_char_diff(b1.text.strip(), b2.text.strip())
-                    apply_old_inline_diff(b1, diff_runs)
-                else: compare_and_mark_tables(b1, b2)
-            else:
-                for i in range(i1, i2): color_entire_block(blocks1[i], COLOR_RED)
+            old_subset = blocks1[i1:i2]
+            new_subset = blocks2[j1:j2]
+            paired = match_replaced_ranges(old_subset, new_subset)
+            for old_b, new_b in paired:
+                if old_b and new_b:
+                    if isinstance(old_b, docx.text.paragraph.Paragraph) and isinstance(new_b, docx.text.paragraph.Paragraph):
+                        diff_runs = get_char_diff(old_b.text.strip(), new_b.text.strip())
+                        apply_old_inline_diff(old_b, diff_runs)
+                    elif isinstance(old_b, docx.table.Table) and isinstance(new_b, docx.table.Table):
+                        compare_and_mark_tables(old_b, new_b)
+                    else:
+                        color_entire_block(old_b, COLOR_RED)
+                elif old_b:
+                    color_entire_block(old_b, COLOR_RED)
 
     for tag, i1, i2, j1, j2 in reversed(opcodes):
-        if tag in ('equal', 'delete'): continue
+        if tag == 'equal' or tag == 'delete':
+            continue
         elif tag == 'insert':
-            for j in range(j1, j2): color_entire_block(blocks2[j], COLOR_BLUE)
+            for j in range(j1, j2):
+                color_entire_block(blocks2[j], COLOR_BLUE)
         elif tag == 'replace':
-            if (i2 - i1 == 1) and (j2 - j1 == 1) and (blocks1_repr[i1][0] == blocks2_repr[j1][0]):
-                b1, b2 = blocks1[i1], blocks2[j1]
-                if isinstance(b2, docx.text.paragraph.Paragraph):
-                    diff_runs = get_char_diff(b1.text.strip(), b2.text.strip())
-                    apply_new_inline_diff(b2, diff_runs)
-            else:
-                for j in range(j1, j2): color_entire_block(blocks2[j], COLOR_BLUE)
+            old_subset = blocks1[i1:i2]
+            new_subset = blocks2[j1:j2]
+            paired = match_replaced_ranges(old_subset, new_subset)
+            for old_b, new_b in paired:
+                if old_b and new_b:
+                    if isinstance(old_b, docx.text.paragraph.Paragraph) and isinstance(new_b, docx.text.paragraph.Paragraph):
+                        diff_runs = get_char_diff(old_b.text.strip(), new_b.text.strip())
+                        apply_new_inline_diff(new_b, diff_runs)
+                    elif isinstance(old_b, docx.table.Table) and isinstance(new_b, docx.table.Table):
+                        pass
+                    else:
+                        color_entire_block(new_b, COLOR_BLUE)
+                elif new_b:
+                    color_entire_block(new_b, COLOR_BLUE)
 
     return comparison_records
 
+# ----------------------------------------------------
+# API 엔드포인트
+# ----------------------------------------------------
 @app.get("/ping")
 def ping():
     return {"status": "ok", "message": "Server awake!"}
@@ -674,6 +879,7 @@ async def compare_documents(
 
     comparison_records = compare_and_modify_originals(doc1, doc2)
 
+    # 양식 파일 적용
     if template_file:
         template_bytes = await template_file.read()
         doc_table = docx.Document(io.BytesIO(template_bytes))
@@ -701,6 +907,7 @@ async def compare_documents(
                 p.runs[0].font.bold = True
                 p.runs[0].font.size = Pt(10)
 
+    # 제품명 치환 (%제품명%)
     if product_name:
         clean_product_name = re.sub(r"\s+", " ", product_name).strip()
         replace_placeholder_in_element(doc_table, "%제품명%", clean_product_name)
@@ -708,8 +915,9 @@ async def compare_documents(
             if section.header is not None:
                 replace_placeholder_in_element(section.header, "%제품명%", clean_product_name)
 
+    # 기록 작성
     if comparison_records:
-        write_records_to_table(comparison_records, table, doc_subtype)
+        write_records_to_table(comparison_records, table, doc_subtype, has_template=bool(template_file))
         col_widths = [Inches(1.5), Inches(3.0), Inches(3.0), Inches(1.0)]
         for row in table.rows:
             for idx, width in enumerate(col_widths):
